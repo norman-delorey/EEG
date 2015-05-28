@@ -35,6 +35,7 @@ import ddf.minim.*;
 import ddf.minim.signals.*;
 import ddf.minim.analysis.*;
 import ddf.minim.effects.*;
+import javax.sound.sampled.*;
 
 //Important constants that may need to be changed.
 float timeScale = 50; //scales the amplitude of time-domain data, can be changed
@@ -49,7 +50,9 @@ static int betaBandwidth = 2;
 //Variables used to store data functions/effects.
 Minim minim;
 Serial myPort;
-float[] timeSignal = new float[240];
+  
+final int timeLength = 240;
+float[] timeSignal = new float[timeLength];
 FFT fft;
 NotchFilter notch;
 LowPassSP lpSP;
@@ -81,8 +84,27 @@ int averageLength = 200; //averages about the last 5 seconds worth of data
 int averageBins = 6; //we have 6 types of brain waves
 int counter = 0;
 
+// There are four ways of reading the data into the system:
+final int INPUT_FROM_RAW_AUDIO = 0;
+final int INPUT_FROM_BUFFERED_AUDIO = 1;
+final int INPUT_FROM_SERIAL_PORT = 2;
+final int INPUT_FROM_TEST_DATA = 3;
+
+int readDataFrom = INPUT_FROM_BUFFERED_AUDIO;
+
+boolean debugTraces = false;    // swtich off the 'averageBadData flags', which slows things down a lot
+final int NUM_CHANNELS = 1;
+AudioInput in;
+
+
 void setup()
 {
+  // For serial input, you need an Arduino to feed the data back to processing.
+  if (readDataFrom == INPUT_FROM_SERIAL_PORT) {
+    int serialIndex = 0;
+    myPort = new Serial(this, Serial.list()[serialIndex], 9600);
+  }
+  
   //initialize array of averages for running average calculation
   averages = new float[averageBins][averageLength];
   for (int i = 0; i < averageBins; i++){
@@ -100,7 +122,9 @@ void setup()
   
   //initialize minim, as well as some filters
   minim = new Minim(this);
-  minim.debugOn();
+  if (debugTraces) {
+    minim.debugOn();
+  }
   notch = new NotchFilter(60, 10, 32768);
   lpSP = new LowPassSP(40, 32768);
   lpFS = new LowPassFS(60, 32768);
@@ -108,7 +132,7 @@ void setup()
   alphaFilter = new BandPass(alphaCenter/scaleFreq,alphaBandwidth/scaleFreq,32768);
   
   // initialize values in array that will be used for input
-  for (int i = 0; i < 240; i++){
+  for (int i = 0; i < timeLength; i++){
     timeSignal[i] = 0;
   }
   
@@ -117,10 +141,38 @@ void setup()
   fft.window(FFT.HAMMING);
   rectMode(CORNERS);
   println(fft.getBandWidth());
+
+  Mixer.Info[] mixerInfo;
+  mixerInfo = AudioSystem.getMixerInfo();
+  println("Available mixers:");
+  for(int i = 0; i < mixerInfo.length; i++)  {
+    println(i +" : " + mixerInfo[i].getName());
+  } 
+  // We could introduce a P5 UI to select the mixer here
+  int mixerID = 3;
+
+  Mixer mixer = AudioSystem.getMixer(mixerInfo[mixerID]);
+  minim.setInputMixer(mixer);
+  in = minim.getLineIn(Minim.MONO, timeLength);
+  
+  if (in == null) {
+    exit();
+  }
 }
+
 
 void draw()
 {
+   switch(readDataFrom) {
+     case INPUT_FROM_BUFFERED_AUDIO:
+       fillTimeSignalWithAudioData();
+       break;
+       
+     case INPUT_FROM_TEST_DATA:
+       fillTimeSignalWithTestData();
+       break;
+   }
+  
   /*badDataFlag handles any "artifacts" we may pick up while recording the data.
   Artifacts are essentially imperfections in the data recording -- they can come
   from muscle movements, blinking, anything that disturbs the electrodes. If the 
@@ -140,7 +192,7 @@ void draw()
   
   //check for spikes relative to other data
   for (int i = 0; i < windowLength - 1; i++){
-    if (abs(in.left.get((i+1)*round(in.bufferSize()/windowLength))) > timeDomainAverage*4)
+    if (abs(getData(i+1, windowLength))  > timeDomainAverage*4)
       averageBadDataFlag = true;
   }
   
@@ -149,7 +201,39 @@ void draw()
   displayFreqAverages();
   
   counter++;
+  }
+
+void fillTimeSignalWithAudioData() {
+  for(int i=0;i<timeLength;++i) {
+    int waveOffset = round((i * in.bufferSize()) / timeLength);
+    timeSignal[i] = in.left.get(waveOffset);
+  }
+} 
+
+void fillTimeSignalWithTestData() {
+  shiftNtimes(timeSignal, 1);
+  timeSignal[timeLength - 1] = (counter & 0xff) / 255.0;
+} 
+
+
+float getData(int index, int ofTotal) {
+  int remappedIndex;
+ 
+ switch(readDataFrom) {
+    case INPUT_FROM_RAW_AUDIO:
+       remappedIndex = round((index * in.bufferSize())/ofTotal);
+       return in.left.get(remappedIndex);
+       
+    case INPUT_FROM_BUFFERED_AUDIO:
+    case INPUT_FROM_TEST_DATA:
+    case INPUT_FROM_SERIAL_PORT:
+       remappedIndex = round((index * timeLength)/ofTotal);
+       return timeSignal[remappedIndex];
+    }
+    
+    return 0;
 }
+
 
 void keyPressed(){
   if (key == 'w'){
@@ -161,9 +245,13 @@ void keyPressed(){
 }
 
 void serialEvent(Serial p){
+  // As above, this does not appear to get used, but I've the code anyway
+  // in case you're wondering what it should be.
   while (p.available() > 0){
-    shiftNtimes(timeSignal, 1);
-    timeSignal(
+    if (readDataFrom == INPUT_FROM_SERIAL_PORT) {
+      shiftNtimes(timeSignal, 1);
+      timeSignal[timeLength-1] = p.read()/255.0;
+    }
   }
 }
 
@@ -173,13 +261,13 @@ void serialEvent(Serial p){
 public void shiftNtimes(float[] myArray, int numShifts){
   int timesShifted = 0;
   while (timesShifted < numShifts){
-    for (int i = 0; i < NUM_CHANNELS; i++){
+    //for (int i = 0; i < NUM_CHANNELS; i++){
       for (int j = 0; j < timeLength - 1; j++){
-        myArray[i][j] = myArray[i][j + 1];
+        myArray[j] = myArray[j + 1];
       }
-      myArray[i][(int)timeLength - 1] = 0;
+      myArray[(int)timeLength - 1] = 0;
       timesShifted++;
-    }
+   // }
   }
 }
 
@@ -188,19 +276,24 @@ void drawSignalData(){
   timeDomainAverage = 0;
   for(int i = 0; i < windowLength - 1; i++)
     {
+      float dataValue = getData(i, windowLength);
+      float nextValue = getData(i+1, windowLength);
+      
       stroke(255,255,255);
       //data that fills our window is normalized to +-1, so we want to throw out
       //sets that have data that exceed this by the factor absoluteCutoff
-      if (abs(in.left.get(i*round(in.bufferSize()/windowLength)))*timeScale/normalScale > .95){
+      if (abs(dataValue) * timeScale/normalScale > .95){
+
+      //if (abs(in.left.get(i*round(in.bufferSize()/windowLength)))*timeScale/normalScale > .95){
           absoluteBadDataFlag = true;
           fill(250,250,250);
           stroke(150,150,150);
         }
       //Draw the time domain signal.
-      line(i, 50 + in.left.get(i*round(in.bufferSize()/windowLength))*timeScale, 
-           i+1, 50 + in.left.get((i+1)*round(in.bufferSize()/windowLength))*timeScale);
+      line(i, 50 + dataValue*timeScale, 
+           i+1, 50 + nextValue*timeScale);
            
-      timeDomainAverage += abs(in.left.get(i*round(in.bufferSize()/windowLength)));
+      timeDomainAverage += abs(dataValue);
       
       //Draw un-averaged frequency bands of signal.
       if (i < (windowLength - 1)/2){
@@ -252,13 +345,13 @@ void drawSignalData(){
 void displayText(){
   //show user when data is being thrown out
   text("absoluteBadDataFlag = " + absoluteBadDataFlag, windowLength - 200, 120);
-  if (absoluteBadDataFlag == true)
+  if (absoluteBadDataFlag == true && debugTraces)
   {
     println("absoluteBadDataFlag = " + absoluteBadDataFlag);
     println(counter);
   }
   text("averageBadDataFlag = " + averageBadDataFlag, windowLength - 200, 140);
-  if (averageBadDataFlag == true)
+  if (averageBadDataFlag == true && debugTraces)
   {
     println("averageBadDataFlag = " + averageBadDataFlag);
     println(counter);

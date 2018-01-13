@@ -37,6 +37,10 @@ import ddf.minim.analysis.*;
 import ddf.minim.effects.*;
 import javax.sound.sampled.*;
 
+//For sending the data to an external client
+import processing.net.*;
+
+
 //Important constants that may need to be changed.
 float timeScale = 50; //scales the amplitude of time-domain data, can be changed
 static float normalScale = 50;
@@ -96,9 +100,16 @@ boolean debugTraces = false;    // swtich off the 'averageBadData flags', which 
 final int NUM_CHANNELS = 1;
 AudioInput in;
 
+//The server to use
+Server dataServer;
+
 
 void setup()
 {
+  
+  //Create Server
+  dataServer = new Server(this, 5443);
+  
   // For serial input, you need an Arduino to feed the data back to processing.
   if (readDataFrom == INPUT_FROM_SERIAL_PORT) {
     int serialIndex = 0;
@@ -118,7 +129,7 @@ void setup()
   windowHeight = 500;
   FFTheight = windowHeight - 200;
   
-  size(windowLength, windowHeight, P2D);
+  size(840, 550, P2D);
   
   //initialize minim, as well as some filters
   minim = new Minim(this);
@@ -458,4 +469,5 @@ void stop()
   in.close();
   minim.stop();
   super.stop();
+  dataServer.stop();
 }

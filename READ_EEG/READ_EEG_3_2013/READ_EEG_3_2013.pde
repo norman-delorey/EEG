@@ -102,13 +102,13 @@ AudioInput in;
 
 //The server to use
 Server dataServer;
-
+int port = 5204;
 
 void setup()
 {
   
-  //Create Server
-  dataServer = new Server(this, 5443);
+  //Create Server on port 5443
+  dataServer = new Server(this, 5204);
   
   // For serial input, you need an Arduino to feed the data back to processing.
   if (readDataFrom == INPUT_FROM_SERIAL_PORT) {
@@ -245,6 +245,17 @@ float getData(int index, int ofTotal) {
     return 0;
 }
 
+//Writes the information for the wave to the clients on the server
+//@param waveValue: the float value for the wave to write
+//@param waveType: the type of wave being sent
+void writeDataToServer(String waveType, float waveValue){
+  
+  if(dataServer.active()){
+    //TODO make sure standard is decided on
+    dataServer.write(waveType + " " + str(waveValue)); //cast waveValue as a string because write() only takes String, byte[] and int
+    println(waveType + " " + str(waveValue));
+  }
+}
 
 void keyPressed(){
   if (key == 'w'){
@@ -312,29 +323,35 @@ void drawSignalData(){
           if (i <= round(3/scaleFreq)){             
             fill(0,0,250);        //delta
             stroke(25,0,225);
+            writeDataToServer("delta", dataValue);
           }
           if (i >= round(4/scaleFreq) && i <= round((alphaCenter - alphaBandwidth)/scaleFreq)-1){
             fill(50,0,200);       //theta
             stroke(75,0,175);
+            writeDataToServer("theta", dataValue);
           }
           if (i >= round((alphaCenter - alphaBandwidth)/scaleFreq) && 
           i <= round((alphaCenter + alphaBandwidth)/scaleFreq)){  
             fill(100,0,150);      //alpha
             stroke(125,0,125);
+            writeDataToServer("alpha", dataValue);
           }
           if (i >= round((alphaCenter + alphaBandwidth)/scaleFreq)+1 && 
           i <= round((betaCenter-betaBandwidth)/scaleFreq)-1){ 
             fill(150,0,100);      //low beta
             stroke(175,0,75);
+            writeDataToServer("lowBeta", dataValue);
           }
           if (i >= round((betaCenter - betaBandwidth)/scaleFreq) && 
           i <= round((betaCenter + betaBandwidth)/scaleFreq)){ 
             fill(200,0,50);       //midrange beta
             stroke(225,0,25);
+             writeDataToServer("midBeta", dataValue);
           }
           if (i >= round((betaCenter + betaBandwidth)/scaleFreq)+1 && i <= round(30/scaleFreq)){ 
             fill(250,0,0);        //high beta
             stroke(255,0,10);
+             writeDataToServer("highBeta", dataValue);
           }
           if (i >= round(32/scaleFreq)){
             fill(240,240,240);    //rest of stuff, mainly noise
@@ -466,8 +483,8 @@ void displayFreqAverages(){
 // always close Minim audio classes when you are done with them
 void stop()
 {
+  dataServer.stop();
   in.close();
   minim.stop();
   super.stop();
-  dataServer.stop();
 }

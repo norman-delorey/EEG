@@ -104,6 +104,13 @@ AudioInput in;
 Server dataServer;
 int port = 5204;
 
+String[] sleepStages = new String[]{"Alert Awake", "Relaxed Awake", " NREM1", "NREM2", "NREM3", "REM"};
+int logNumMax = 10;
+int logNum = -1;
+String[] lastTenWaveTypes = new String[10];
+String[] lastTenSleepStages = new String[10];
+int stageLogNumMax = 10;
+int stageLogNum = -1;
 void setup()
 {
   
@@ -251,9 +258,110 @@ float getData(int index, int ofTotal) {
 void writeDataToServer(String waveType, float waveValue){
   
   if(dataServer.active()){
-    //TODO make sure standard is decided on
-    dataServer.write(waveType + " " + str(waveValue)); //cast waveValue as a string because write() only takes String, byte[] and int
+    dataServer.write(waveType + "," + str(waveValue)+","); //cast waveValue as a string because write() only takes String, byte[] and int
     println(waveType + " " + str(waveValue));
+    
+  }
+}
+
+//Looks at recent wave types to determine current sleep type.
+//Will also check for the wakeup pattern in all of the NREM sleep stages
+//@param recentWaveTypes: the X most recent types of waves received
+//@return the current sleep stage from sleepStages
+String getCurrentSleepStage(String[] recentWaveTypes){
+  stageLogNum++;
+  if(stageLogNum >= stageLogNumMax){
+    stageLogNum -= stageLogNumMax;
+  }
+  boolean hasBeta = false;
+  boolean hasAlpha = false;
+  boolean hasDelta = false;
+  boolean hasTheta = false;
+  
+  int alphaCount = 0;
+  int thetaCount = 0;
+  int deltaCount = 0;
+  int betaCount = 0;
+  
+  for(int i = 0; i < recentWaveTypes.length; i++){
+    if(recentWaveTypes[i] != null){
+      //println(recentWaveTypes[i]);
+      if(recentWaveTypes[i].equals("lowBeta") || recentWaveTypes[i].equals("midBeta") 
+      || recentWaveTypes[i].equals("highBeta")){
+        betaCount++;
+        hasBeta = true;
+      }
+      if(recentWaveTypes[i].equals("alpha")){
+        alphaCount++;
+        hasAlpha = true;
+      }
+      if(recentWaveTypes[i].equals("delta")){
+        deltaCount++;
+        hasDelta = true;
+      }
+      if(recentWaveTypes[i].equals("theta")){
+        thetaCount++;
+        hasTheta = true;
+      }
+    }
+  }
+  if(hasBeta && betaCount > alphaCount){
+    lastTenSleepStages[stageLogNum] = sleepStages[0];
+    return sleepStages[0];
+  }else if(hasAlpha && !hasTheta){
+    lastTenSleepStages[stageLogNum] = sleepStages[1];
+    return sleepStages[1];
+  }else if(hasAlpha && hasTheta){
+    float thetaToAlphaRatio = (float) thetaCount / alphaCount;
+    if(thetaToAlphaRatio >= 0.7){
+      lastTenSleepStages[stageLogNum] = sleepStages[2];
+      checkForConsecutiveWakeupTimes(lastTenSleepStages);
+      return sleepStages[2];
+    }else{
+      lastTenSleepStages[stageLogNum] = sleepStages[1];
+      return sleepStages[1];
+    }
+  }else if(hasTheta && !hasDelta){
+    lastTenSleepStages[stageLogNum] = sleepStages[3];
+    checkForConsecutiveWakeupTimes(lastTenSleepStages);
+    return sleepStages[3];
+  }else if(hasDelta){
+    
+    if(deltaCount >= thetaCount){
+      lastTenSleepStages[stageLogNum] = sleepStages[4];
+      checkForConsecutiveWakeupTimes(lastTenSleepStages);
+      return sleepStages[4];
+    }else{
+      lastTenSleepStages[stageLogNum] = sleepStages[3];
+      checkForConsecutiveWakeupTimes(lastTenSleepStages);
+      return sleepStages[3];
+    }
+  }
+  lastTenSleepStages[stageLogNum] = "Inconclusive";
+  return "Inconclusive";
+}
+
+//Checks a list of recent sleep stages for the amount of NREM2 cycles
+//If enough cycles are present it triggers the alarm on the client side.
+//@param recentSleepStages: an array of strings repressenting the recent sleep settings. 
+void checkForConsecutiveWakeupTimes(String[] recentSleepStages){
+  int nRemTwoCount = 0;
+  int buffer = 2;
+  for(int i = 0; i < recentSleepStages.length; i++){
+    if(recentSleepStages[i] != null && recentSleepStages[i].equals(sleepStages[3])){
+      nRemTwoCount++;
+    }
+  }
+  
+  if(nRemTwoCount >= recentSleepStages.length - buffer){
+    sendAlarmSignal();
+  }
+}
+
+//Sends the alarm signal to the client
+void sendAlarmSignal(){
+  if(dataServer.active()){
+    dataServer.write("ALARM\n");
   }
 }
 
@@ -263,6 +371,9 @@ void keyPressed(){
   }
   if (key == 'e'){
     fft.window(FFT.NONE);
+  }
+  if(key == 'a'){
+    sendAlarmSignal();
   }
 }
 
@@ -317,40 +428,85 @@ void drawSignalData(){
            
       timeDomainAverage += abs(dataValue);
       
+      //dataValue = abs(dataValue); //account for sign change from sin wave
+      
+      
       //Draw un-averaged frequency bands of signal.
       if (i < (windowLength - 1)/2){
+        
         //set colors for each type of brain wave
           if (i <= round(3/scaleFreq)){             
             fill(0,0,250);        //delta
             stroke(25,0,225);
+            logNum++;
+            if(logNum >= logNumMax){
+              logNum -= logNumMax;
+            }
+            lastTenWaveTypes[logNum] = "delta";
+            println(getCurrentSleepStage(lastTenWaveTypes));
+
             writeDataToServer("delta", dataValue);
           }
           if (i >= round(4/scaleFreq) && i <= round((alphaCenter - alphaBandwidth)/scaleFreq)-1){
             fill(50,0,200);       //theta
             stroke(75,0,175);
+            if(logNum >= logNumMax){
+              logNum -= logNumMax;
+            }
+            lastTenWaveTypes[logNum] = "theta";
+            println(getCurrentSleepStage(lastTenWaveTypes));
+
             writeDataToServer("theta", dataValue);
           }
           if (i >= round((alphaCenter - alphaBandwidth)/scaleFreq) && 
           i <= round((alphaCenter + alphaBandwidth)/scaleFreq)){  
             fill(100,0,150);      //alpha
             stroke(125,0,125);
+            logNum++;
+            if(logNum >= logNumMax){
+              logNum -= logNumMax;
+            }
+            lastTenWaveTypes[logNum] = "alpha";
+            println(getCurrentSleepStage(lastTenWaveTypes));
+
             writeDataToServer("alpha", dataValue);
           }
           if (i >= round((alphaCenter + alphaBandwidth)/scaleFreq)+1 && 
           i <= round((betaCenter-betaBandwidth)/scaleFreq)-1){ 
             fill(150,0,100);      //low beta
             stroke(175,0,75);
+            logNum++;
+            if(logNum >= logNumMax){
+              logNum -= logNumMax;
+            }
+            lastTenWaveTypes[logNum] = "lowBeta";
+            println(getCurrentSleepStage(lastTenWaveTypes));
+
             writeDataToServer("lowBeta", dataValue);
           }
           if (i >= round((betaCenter - betaBandwidth)/scaleFreq) && 
           i <= round((betaCenter + betaBandwidth)/scaleFreq)){ 
             fill(200,0,50);       //midrange beta
             stroke(225,0,25);
-             writeDataToServer("midBeta", dataValue);
+            logNum++;
+            if(logNum >= logNumMax){
+              logNum -= logNumMax;
+            }
+            lastTenWaveTypes[logNum] = "midBeta";
+            println(getCurrentSleepStage(lastTenWaveTypes));
+
+            writeDataToServer("midBeta", dataValue);
           }
           if (i >= round((betaCenter + betaBandwidth)/scaleFreq)+1 && i <= round(30/scaleFreq)){ 
             fill(250,0,0);        //high beta
             stroke(255,0,10);
+            logNum++;
+            if(logNum >= logNumMax){
+              logNum -= logNumMax;
+            }
+            lastTenWaveTypes[logNum] = "highBeta";
+            println(getCurrentSleepStage(lastTenWaveTypes));
+
              writeDataToServer("highBeta", dataValue);
           }
           if (i >= round(32/scaleFreq)){
@@ -480,11 +636,24 @@ void displayFreqAverages(){
   }
 }
 
+void writeAveragesToFile(){
+  PrintWriter output = createWriter("averageData.txt");
+  for(int i = 0; i < 6; i++){
+    for(int j = 0; j < averageLength; j++){
+      output.print(averages[i][j]+",");
+    }
+    output.print("\n");
+  }
+  output.flush();
+  output.close();
+}
+
 // always close Minim audio classes when you are done with them
-void stop()
+void exit()
 {
+  writeAveragesToFile();
   dataServer.stop();
   in.close();
   minim.stop();
-  super.stop();
+  super.exit();
 }
